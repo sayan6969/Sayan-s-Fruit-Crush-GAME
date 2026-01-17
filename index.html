@@ -3,17 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sayan's Fruit Crush - Fixed Pro</title>
+    <title>Sayan's Fruit Crush - Universal Touch</title>
     <style>
         :root {
             --bg: #050510;
             --accent: #00ffcc;
             --tile-size: 11vw; 
-            --max-tile: 65px;
+            --max-tile: 60px;
         }
         @media (min-width: 600px) { :root { --tile-size: var(--max-tile); } }
 
-        * { box-sizing: border-box; touch-action: none; -webkit-tap-highlight-color: transparent; }
+        * { 
+            box-sizing: border-box; 
+            touch-action: none; /* Critical: prevents screen scrolling while playing */
+            -webkit-user-select: none;
+            user-select: none;
+        }
 
         body {
             font-family: 'Segoe UI', sans-serif;
@@ -27,7 +32,6 @@
             overflow: hidden;
         }
 
-        /* Splash Screen */
         #splash {
             position: fixed;
             inset: 0;
@@ -44,7 +48,6 @@
         .title span { display: inline-block; animation: bounce 1.5s infinite; }
         @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-15px); color: #ff00ff; } }
 
-        /* Game UI */
         .hud {
             display: flex;
             justify-content: space-between;
@@ -75,21 +78,21 @@
             border-radius: 6px;
             display: flex;
             align-items: center; justify-content: center;
+            position: relative;
         }
 
         .fruit {
-            font-size: clamp(24px, 7vw, 40px);
-            cursor: pointer;
+            font-size: clamp(24px, 7vw, 38px);
             z-index: 2;
+            pointer-events: none; /* Allows the tile to catch the touch start */
             transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         }
 
-        /* BLAST EFFECT */
+        .falling { animation: slideIn 0.4s cubic-bezier(0.25, 0.46, 0.45, 1.4); }
+        @keyframes slideIn { from { transform: translateY(-100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
         .blast-anim { animation: blast 0.4s ease-out forwards; }
-        @keyframes blast {
-            0% { transform: scale(1); filter: brightness(2); }
-            100% { transform: scale(1.8); opacity: 0; }
-        }
+        @keyframes blast { 0% { transform: scale(1); filter: brightness(2); } 100% { transform: scale(1.8); opacity: 0; } }
 
         .bomb-bg { background: radial-gradient(circle, #ff0055, transparent); border-radius: 50%; box-shadow: 0 0 10px #ff0055; }
         .black-bomb-bg { background: #fff; border-radius: 50%; box-shadow: 0 0 15px #fff; }
@@ -98,7 +101,7 @@
         @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
 
         #game-over {
-            position: fixed; inset: 0; background: rgba(0,0,0,0.9);
+            position: fixed; inset: 0; background: rgba(0,0,0,0.95);
             display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 100;
         }
     </style>
@@ -119,7 +122,7 @@
             <span>F</span><span>r</span><span>u</span><span>i</span><span>t</span>
             <span>C</span><span>r</span><span>u</span><span>s</span><span>h</span>
         </div>
-        <p style="color: #aaa; margin-top: 20px;">TOUCH TO PLAY</p>
+        <p style="color: #00ffcc; margin-top: 20px; font-weight: bold; letter-spacing: 2px;">SWIPE TO CRUSH</p>
     </div>
 
     <div class="hud">
@@ -136,8 +139,8 @@
 
     <div id="game-over">
         <h1 style="color:var(--accent)">TIME'S UP!</h1>
-        <p id="final-stats"></p>
-        <button onclick="location.reload()" style="padding:15px 40px; border:none; background:var(--accent); font-weight:bold; border-radius:30px; cursor:pointer;">NEXT LEVEL</button>
+        <p id="final-stats" style="font-size: 20px;"></p>
+        <button onclick="location.reload()" style="padding:15px 40px; border:none; background:var(--accent); font-weight:bold; border-radius:30px; cursor:pointer;">PLAY AGAIN</button>
     </div>
 
     <script>
@@ -148,8 +151,11 @@
         
         let squares = [];
         let gameActive = false;
-        let isMoving = false;
-        let userData = JSON.parse(localStorage.getItem("sayan_crush_final")) || { level: 1, coins: 0 };
+        let isProcessing = false;
+        let userData = JSON.parse(localStorage.getItem("sayan_crush_v3")) || { level: 1, coins: 0 };
+
+        // Interaction Variables
+        let startX, startY, idDragged;
 
         function startGame() {
             bgMusic.volume = 0.3;
@@ -170,49 +176,63 @@
                 const span = document.createElement('span');
                 span.className = 'fruit';
                 span.innerHTML = fruits[Math.floor(Math.random() * fruits.length)];
-                span.draggable = true;
                 
                 tile.appendChild(span);
                 gridEl.appendChild(tile);
                 squares.push(tile);
 
-                // Events
-                span.addEventListener('mousedown', dragStart);
-                span.addEventListener('touchstart', dragStart, {passive: true});
-                span.addEventListener('dragover', e => e.preventDefault());
-                span.addEventListener('drop', dragDrop);
+                // Universal Touch/Mouse Events
+                tile.addEventListener('pointerdown', touchStart);
+                tile.addEventListener('pointerup', touchEnd);
             }
             gameActive = true;
             runTimer();
-            // Start the logic loop
-            setInterval(gameLogic, 200);
+            setInterval(loop, 200);
         }
 
-        function playCrushSfx() {
-            const sound = crushSfx.cloneNode();
-            sound.volume = 0.5;
-            sound.play();
+        function touchStart(e) {
+            if (!gameActive || isProcessing) return;
+            startX = e.clientX || e.touches[0].clientX;
+            startY = e.clientY || e.touches[0].clientY;
+            idDragged = parseInt(this.id);
         }
 
-        let idDragged, idReplaced;
+        function touchEnd(e) {
+            if (idDragged === undefined || isProcessing) return;
+            let endX = e.clientX || e.changedTouches[0].clientX;
+            let endY = e.clientY || e.changedTouches[0].clientY;
 
-        function dragStart(e) {
-            if (!gameActive || isMoving) return;
-            idDragged = parseInt(this.parentElement.id);
+            let diffX = endX - startX;
+            let diffY = endY - startY;
+            let threshold = 30; // Minimum swipe distance
+
+            let idTarget = null;
+
+            if (Math.abs(diffX) > Math.abs(diffY)) {
+                // Horizontal Swipe
+                if (diffX > threshold && idDragged % 8 !== 7) idTarget = idDragged + 1;
+                else if (diffX < -threshold && idDragged % 8 !== 0) idTarget = idDragged - 1;
+            } else {
+                // Vertical Swipe
+                if (diffY > threshold && idDragged < 56) idTarget = idDragged + 8;
+                else if (diffY < -threshold && idDragged >= 8) idTarget = idDragged - 8;
+            }
+
+            if (idTarget !== null) handleMove(idDragged, idTarget);
+            idDragged = undefined;
         }
 
-        async function dragDrop(e) {
-            idReplaced = parseInt(this.parentElement.id);
-            const valid = [idDragged - 1, idDragged + 1, idDragged - 8, idDragged + 8].includes(idReplaced);
+        async function handleMove(i1, i2) {
+            isProcessing = true;
+            await swap(i1, i2);
             
-            if (valid) {
-                isMoving = true;
-                await swap(idDragged, idReplaced);
-                // Check if move resulted in a match, if not, swap back
-                if (!checkMatches()) {
-                    setTimeout(() => swap(idDragged, idReplaced), 300);
-                }
-                isMoving = false;
+            let matchFound = checkMatches();
+            if (!matchFound) {
+                // Swap back if no match (standard Candy Crush rule)
+                setTimeout(() => swap(i1, i2), 250);
+                setTimeout(() => { isProcessing = false; }, 500);
+            } else {
+                isProcessing = false;
             }
         }
 
@@ -220,7 +240,6 @@
             const f1 = squares[i1].querySelector('.fruit');
             const f2 = squares[i2].querySelector('.fruit');
 
-            // Animation
             const r1 = f1.getBoundingClientRect();
             const r2 = f2.getBoundingClientRect();
             f1.style.transform = `translate(${r2.left - r1.left}px, ${r2.top - r1.top}px)`;
@@ -228,8 +247,9 @@
 
             await new Promise(r => setTimeout(r, 250));
 
-            // Data Swap
             let v1 = f1.innerHTML, v2 = f2.innerHTML;
+            
+            // Black Bomb Logic
             if (v1 === '🖤' || v2 === '🖤') {
                 blastColor((v1 === '🖤') ? v2 : v1);
                 f1.innerHTML = ''; f2.innerHTML = '';
@@ -241,7 +261,7 @@
         }
 
         function blastColor(color) {
-            playCrushSfx();
+            playSfx();
             squares.forEach(s => {
                 const f = s.querySelector('.fruit');
                 if (f.innerHTML === color) {
@@ -253,8 +273,8 @@
             save();
         }
 
-        function gameLogic() {
-            if (!gameActive || isMoving) return;
+        function loop() {
+            if (!gameActive || isProcessing) return;
             checkMatches();
             applyGravity();
             updateSpecials();
@@ -262,17 +282,19 @@
 
         function checkMatches() {
             let found = false;
-            // Rows
+            // Check rows and columns
             for (let i = 0; i < 64; i++) {
+                let val = squares[i].querySelector('.fruit').innerHTML;
+                if (!val || val === '💣' || val === '🖤') continue;
+
+                // Horizontal
                 if (i % 8 < 6) {
                     let r3 = [i, i+1, i+2];
-                    let val = squares[i].querySelector('.fruit').innerHTML;
-                    if (val && !['💣','🖤'].includes(val) && r3.every(x => squares[x].querySelector('.fruit').innerHTML === val)) {
-                        // Check for 4 or 5
+                    if (r3.every(x => squares[x].querySelector('.fruit').innerHTML === val)) {
                         let reward = null;
-                        if (i % 8 < 4 && squares[i+3].querySelector('.fruit').innerHTML === val) {
+                        if (i % 8 < 5 && squares[i+3].querySelector('.fruit').innerHTML === val) {
                             r3.push(i+3); reward = '💣';
-                            if (i % 8 < 3 && squares[i+4].querySelector('.fruit').innerHTML === val) {
+                            if (i % 8 < 4 && squares[i+4].querySelector('.fruit').innerHTML === val) {
                                 r3.push(i+4); reward = '🖤';
                             }
                         }
@@ -280,28 +302,27 @@
                         found = true;
                     }
                 }
-            }
-            // Columns
-            for (let i = 0; i < 48; i++) {
-                let c3 = [i, i+8, i+16];
-                let val = squares[i].querySelector('.fruit').innerHTML;
-                if (val && !['💣','🖤'].includes(val) && c3.every(x => squares[x].querySelector('.fruit').innerHTML === val)) {
-                    let reward = null;
-                    if (i < 40 && squares[i+24].querySelector('.fruit').innerHTML === val) {
-                        c3.push(i+24); reward = '💣';
-                        if (i < 32 && squares[i+32].querySelector('.fruit').innerHTML === val) {
-                            c3.push(i+32); reward = '🖤';
+                // Vertical
+                if (i < 48) {
+                    let c3 = [i, i+8, i+16];
+                    if (c3.every(x => squares[x].querySelector('.fruit').innerHTML === val)) {
+                        let reward = null;
+                        if (i < 40 && squares[i+24].querySelector('.fruit').innerHTML === val) {
+                            c3.push(i+24); reward = '💣';
+                            if (i < 32 && squares[i+32].querySelector('.fruit').innerHTML === val) {
+                                c3.push(i+32); reward = '🖤';
+                            }
                         }
+                        blastTiles(c3, reward);
+                        found = true;
                     }
-                    blastTiles(c3, reward);
-                    found = true;
                 }
             }
             return found;
         }
 
         function blastTiles(arr, reward) {
-            playCrushSfx();
+            playSfx();
             arr.forEach((idx, k) => {
                 const f = squares[idx].querySelector('.fruit');
                 if (f.innerHTML !== '') {
@@ -323,11 +344,17 @@
                 if (cur.innerHTML !== '' && bel.innerHTML === '') {
                     bel.innerHTML = cur.innerHTML;
                     cur.innerHTML = '';
+                    bel.classList.add('falling');
+                    setTimeout(() => bel.classList.remove('falling'), 400);
                 }
             }
             for (let i = 0; i < 8; i++) {
                 const f = squares[i].querySelector('.fruit');
-                if (f.innerHTML === '') f.innerHTML = fruits[Math.floor(Math.random() * fruits.length)];
+                if (f.innerHTML === '') {
+                    f.innerHTML = fruits[Math.floor(Math.random() * fruits.length)];
+                    f.classList.add('falling');
+                    setTimeout(() => f.classList.remove('falling'), 400);
+                }
             }
         }
 
@@ -339,26 +366,32 @@
             });
         }
 
+        function playSfx() {
+            const sound = crushSfx.cloneNode();
+            sound.volume = 0.5;
+            sound.play();
+        }
+
         function runTimer() {
             let time = 120;
-            const tObj = setInterval(() => {
+            const timerObj = setInterval(() => {
                 time--;
                 document.getElementById('timer').innerText = `${Math.floor(time/60)}:${(time%60).toString().padStart(2,'0')}`;
                 if (time <= 0) {
-                    clearInterval(tObj);
+                    clearInterval(timerObj);
                     gameActive = false;
                     userData.level++;
                     save();
                     bgMusic.pause();
                     document.getElementById('game-over').style.display = 'flex';
-                    document.getElementById('final-stats').innerText = `Level Finished! Total Coins: ${userData.coins}`;
+                    document.getElementById('final-stats').innerText = `Coins Collected: ${userData.coins}`;
                 }
             }, 1000);
         }
 
         function save() {
             document.getElementById('coins').innerText = userData.coins;
-            localStorage.setItem("sayan_crush_final", JSON.stringify(userData));
+            localStorage.setItem("sayan_crush_v3", JSON.stringify(userData));
         }
     </script>
 </body>
